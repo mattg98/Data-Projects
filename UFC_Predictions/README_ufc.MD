@@ -1,6 +1,6 @@
 # UFC fight winner prediction by Matthew Grace
 
-** TO VIEW NOTEBOOK (UFC_Predictions_Notebook.ipynb) WHEN NOT RENDERING ON GITHUB USE: https://nbviewer.jupyter.org/github/mattg98/Data-Projects/blob/master/UFC_Predictions/UFC_Predictions_Notebook.ipynb
+**TO VIEW NOTEBOOK (UFC_Predictions_Notebook.ipynb) WHEN NOT RENDERING ON GITHUB USE**: https://nbviewer.jupyter.org/github/mattg98/Data-Projects/blob/master/UFC_Predictions/UFC_Predictions_Notebook.ipynb
 
 In this github folder, I have a notebook where I have worked on and am continuing to work on (unless specified), creating a model
 to predict winners of UFC fights. While I am starting out using a dataset from Kaggle in order to build these models, future work may include models to maximize profits for bets placed on fights using lines set by oddsmakers.
