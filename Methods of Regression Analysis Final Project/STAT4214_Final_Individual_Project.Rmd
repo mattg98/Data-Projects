@@ -1,0 +1,1699 @@
+---
+title: "STAT 4214 Final Individual Project"
+author: "Matthew Grace"
+date: "12/11/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=140),tidy=TRUE)
+```
+
+# Electricity Demand
+
+## Summary of Problem
+
+The data presented for this problem is 364 observations representing 364 days of a calendar year, starting on Sunday, January 1. Each observation contains a reading of the rate of electricity delivered to customers of the company Gulf Energy in a particular area of Alabama; Gulf Energy is the provider of the data. These readings for electricity rate are measure in megawatts, and naturally are represented with the column name *MW*. The other column containing data for each observation is the average daily temperature of the customers for which this electricity is delivered on the particular day, and has column name *temp*, which is a temperature measure in degrees Fahrenheit.
+
+
+The main task with this data will be to forecast electricity demand (*MW*) for this particular area of Alabama. There will be a focus on the peak electricity demand. What are the necessary predictors in order to accurately forecast the electricity demand? Additionally, can the electricity demand be accurately forecasted? If so, what is the prediction interval of this demand?
+
+In order to answer these questions, I came to a 2 model solution. There was a clear linear regression that could be used to model 
+electricity demand as a function of temperature, however, for different temperature ranges. A multiple regression with interactions that were dummy variables for temperature ranges very accurately captured the electricity demand. In order to forecast future electricity demand, a forecast of temperature was needed. This temperature forecast was done with an autoregressive time series model. Once forecasted temperatures were computed along with their 95% prediction intervals, days 365-372 had their electricity demand forecasted.
+
+Due to there being forecasting for the temperature variable, the the 95% prediction intervals for the multiple regression model used to forecast electricity had additive prediction intervals. Let me explain. The forecasted temperatures had a lower and upper bound for their 95% prediction intervals, as well as an actual forecasted temperature. In order to get a correct prediction interval on the forecasted rate of electricity, I had to forecast electricities using the lower bound, upper bound, and predicted temperatures for each day in the forecast. While this sounds confusing, the analysis will visually be able to give a better representation of this scenario.
+
+Ultimately, the following table shows the forecasted rate of electricity with upper and lower bounds on the 95% prediction interval.
+
+![Forecasted Rate of Electricity](ROE_prediction_interval.png)
+&nbsp;
+
+
+These values are plotted below.
+
+![Forecasted Rate of Electricity Plot](ROE_forecast_plot.png)
+&nbsp;
+
+
+## Data Analysis
+
+### EDA Phase:
+
+In this phase of analysis, visualization and feature creation will be done to aid the future analysis of the data relating to the end-goal of accurate forecasting.
+
+To begin, the data will be loaded and the head of the data will be viewed.
+
+```{r}
+elec <- read.csv('elec.csv')
+head(elec)
+```
+The data begins on a Sunday. Time is a critical component for this problem, and it is likely that accurate forecasting will require more than 1 independent variable (*temp*). Looking at the context of this data, customers have differing electric usage depending on when they are present or absent from their households or place of business. The days of the week are a societal strucutre that could potentially be an indicator for presence or absence of customers from their source of electricity. A column for this feature will be added.
+
+```{r}
+# DOW is the day of the week
+elec$DOW <- rep(c('Sun', 'Mon', 'Tue', 'Wed', 'Thur', 'Fri', 'Sat'), 52)
+```
+
+#### Visualization
+
+Since time is a critical component of this model, I will start by plotting the *MW* values agains the previous day *MW* values.
+
+```{r}
+# time variable to create a lag for the MW values 
+time.l1 <- 2:nrow(elec)
+plot(elec$MW[time.l1-1], elec$MW[time.l1], xlab = 'MW lag=1', ylab = 'MW lag=0',
+     main='Electricity Rate vs Previous Day Electricity Rate (MW)')
+cor(elec$MW[time.l1], elec$MW[time.l1-1])
+```
+
+At a minimum, a lag=1 autoregressive term seems to have a suitable correlation strength as shown by the plot and the computed correlation of 0.71. I want to see the viability of a time series for this problem, and also see if classical regression for *MW* vs *temp* is a viable model choice.
+
+```{r}
+# time series
+plot(elec$MW, type='l', xaxt='n', xlab='Day', ylab = 'Rate of Electricity (MW)', 
+     main='Rate of Electricity Time Series')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+# autocorrelation
+acf(elec$MW, lag.max=365)
+# MW vs temp
+plot(elec$temp, elec$MW, xlab = 'Temperature (F)', ylab='Rate of Electricity (MW)',
+     main='Rate of Electricity vs Temperature')
+```
+
+There are some interesting results from the visualizations. The time series appears to have very noticeable peaks, as well as some degree of periodicity. The ACF plot reveals a period frequency of 280-300 days for each cycle. I think this will be useful if I elect to construct an autoregressive model for *MW*.
+
+Additionally, there does appear to be a relationship for the rate of electricity with temperature. The rate of electricity has a relativley strong negative correlation (albeit for a few high leverage data points) in the temperature range of about 40-53. Then there seems to be no correlation between the variables in the range of 60-74. Lastly, there is a strong positive linear relationship for temperatures in the range of about 75-87 (87 being the maximum temperature recording in the dataset). There is clearly an interaction with certain temperature ranges, and the associated *MW* values. 
+
+Lastly, I want to see a time series for the *temp* variable.
+
+```{r}
+plot(elec$temp, type='l', xaxt='n', xlab='Day', ylab = 'Temperature (F)',
+     main='Temperature Time Series')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+acf(elec$temp, lag.max=365)
+```
+
+The temperature seems to follow a similar cycle of about 300 days.
+
+#### Model Building and Forecasting Strategy
+
+
+I believe I have two choices for an optimal model for forecasting.
+
+1: I construct an autoregressive model for the *MW* variable. Since they data is in chronological order it is a daily time series representing 364 days. Using the *temp* variable, sinusoidal frequency terms, and perhaps dummy variables for days of the week, I can fit an autoregressive model. Forecasting would itself require another autoregressive model for temperature, the temperature variables for day=365, and the whole week of the following year.
+
+2. I construct a multiple regression model simply using *temp* and it's interaction with dummy variables that will represent the temperature ranges. Clearly there will be 3 tightly fit regression lines as shown in the *MW* vs *temp* plot. However, I will also need an autoregressive for the *temp* variable in order to forecast temperatures for the multiple regression model.
+
+I think I will try both of these models. I will first do an autoregressive model for the rate of electricity *MW*. This will take longer to get results as there are more features to explore and add. Then, I will create my second option, a multiple regression model. Once both of these models are created, I will compare them and decide which to use for forecasting. Once my decision is made, I will need one more model that is an autoregressive model to forecast future *temp* values.
+
+Let's begin with the *MW* autoregressive model.
+
+### Analysis: Autoregressive Model for MW values
+
+I will first view the results of building an autoregressive model for the rate of electicity *MW*. This model will have the form:
+$$ MW_t = \beta_0 + \beta_1MW_{t-1} + \epsilon_t, \epsilon_t \sim N(0, \sigma^2)$$
+I am modeling the *MW* value at time $t$ using the previous *MW* observation. The fitted value at time $t$ will have errors. The errors should be normally distributed on mean 0 with a constant variance if they meet the residual assumptions of normality with mean 0 and a constant variance. My goal is for $|\beta_1| < 1$, to give a mean reverting model. If this condition is not met, then my series will either be a random walk ($|\beta_1|=1$) or the values will explode ($|\beta_1| > 1$). An exploding model will not be useful for forecasting.
+
+My hypotheses for this base model at the 95% level are:
+$H0: |\beta_1| \ge 1$
+$H1: |\beta_1| < 1$
+
+```{r}
+time.l1 <- 2:nrow(elec)
+base.model <- lm(MW[time.l1] ~ MW[time.l1-1], data=elec)
+summary(base.model)
+```
+
+The summary output tells me that the null hypothesis should be rejected with $\beta_1 = 0.71098$. With an extremley small p-value, the autoregressive model is mean reverting. Additionally, just using the previous day's rate of electricity is able to explain about 50% of the variance in the next day rate of electricity. To confirm these findings, I must check the resiudal assumptions.
+
+```{r}
+acf(base.model$residuals, lag.max = 30)
+acf(base.model$residuals, lag.max = 364)
+hist(base.model$residuals)
+```
+
+The first autocorrelation plot of the resiudals (which is the autoregressive method for checking residual assumptions) show that there are not many points with a signficant amount of leftover correlation. The second also appears to be okay, but can be improved. The histogram also shows a normal distribution centered on 0, with the only noteable issue being an outlier (or possibly a few) on the right side of the histogram. I think that the residual assumptions are met, and I will confirm my rejection of the null hypthesis and accept the alternative $H_1$. This is a mean reverting autoregressive model.
+
+Let's see the original and fitted time series.
+
+```{r}
+plot(elec$MW, type='l', xaxt='n', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity Time Series with Base Model Overlay', xlim=c(1,nrow(elec)))
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+#adding line of fitted values
+lines((time.l1), base.model$fitted.values, col=2)
+
+
+```
+
+It can be seen that overall, the model does a relatively good job of fitting the time series. However, it is far from perfect, and certain peaks and valleys in the time series are not fit as well as I would like.
+
+
+```{r}
+
+par(mfrow=c(2,2))
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 25-52', xlim=c(25,52))
+lines((time.l1), base.model$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 53-80', xlim=c(53,80))
+lines((time.l1), base.model$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 115-170', xlim=c(115,170))
+lines((time.l1), base.model$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 300-340', xlim=c(300,340))
+lines((time.l1), base.model$fitted.values, col=2)
+```
+
+The plots above show an unsatisfactory amount of underprediction for the valleys and the peaks of the time series. Peak electric rate is critical for correct prediction in the real context of modeling electricity usage. It is also a topic of interest in this research. Additionally, the fitted *MW* values are not able to accurately capture the sudden changes in *MW* and are 'slow' to respond to these changes of direction at each time step with a 1 step delay. This results in an alm
+
+It was previously mentioned that the ACF plots of the residuals (showing 'leftover' correlation) had some very interesting results. Let's take a look at these plots again.
+
+```{r}
+acf(base.model$residuals, lag.max = 30)
+acf(base.model$residuals, lag.max = 364)
+```
+
+What is curious to me is an apperent 7 day cycle in the plot showing 30 days of autocorrelation of the model's residuals. Every 7th residual has autocorrelation above the signficance line, indicating poorly fit observations. This will be explored in the next section when features are added to build a more accurate model.
+
+### Analysis: Exploring and adding extra features
+
+I will start by viewing a histogram of rates of electricity *MW* for each of the days of the week. When I loaded my data I added a variable for which day of the week it is (Sunday through Saturday) as my intuition told me that this is likely to impact the rate of electricity. Let's take a look.
+
+```{r}
+par(mfrow=c(2,2))
+hist(elec$MW[elec$DOW=='Sun'], main = 'Sunday', xlab = '')
+hist(elec$MW[elec$DOW=='Mon'], main = 'Monday', xlab = '')
+hist(elec$MW[elec$DOW=='Tue'], main = 'Tuesday', xlab = '')
+hist(elec$MW[elec$DOW=='Wed'], main = 'Wednesday', xlab = '')
+par(mfrow = c(2,2))
+hist(elec$MW[elec$DOW=='Thur'], main = 'Thursday', xlab = '')
+hist(elec$MW[elec$DOW=='Fri'], main = 'Friday', xlab = '')
+hist(elec$MW[elec$DOW=='Sat'], main = 'Saturday', xlab = '')
+```
+
+I also want to take a look at what days the peak electric values occur on.
+
+```{r}
+# function taken from https://stackoverflow.com/a/18451329
+whichpart <- function(x, n=30) {
+  nx <- length(x)
+  p <- nx-n
+  xp <- sort(x, partial=p)[p]
+  which(x > xp)
+}
+# indices of top 50 values
+indices <- whichpart(x = elec$MW, n=49)
+# converting vector to table and then to frame to view frequencies for each day
+as.data.frame(table(elec[indices, 3]))
+```
+The histograms reveal that weekdays generally have a higher frequency of large *MW* values, and the maximums appear to be smaller as well. The frequency table above has an even more impactful finding in this regard. Of the 49 maximum values of *MW*, Saturday and Sunday have a combined frequency of only 4. Compared to an expecation of 14 under the assumption that temperature (which was earlier shown to be correlated with *MW*) is not itself affected by the day of the week (which is a reasonable assumption since days of the week are arbitrary names for a societal structure), I stand to believe that this is not a random occurence. Additionally; Friday, Saturday, and Sunday have a combined frequency of 10 vs an expecation of 21.
+
+These findings are promising for further models, since 2 dummy variables can be created for weekends and weekdays or Friday-Sunday and Monday-Thursday rather than indivudal dummies for each day of the week; this allows a better predictive variance and a less biased model reducing the possibility of over fitting.
+
+The other important feature for this model is temperature. Let's view the plot of rates of electricity vs the temperatures again, as well as rates of electricity vs temperature from the previous day, a histogram, and a boxplot.
+
+```{r}
+plot(elec$temp, elec$MW, main = 'Rate of Electricty vs Temperature',
+     xlab='Temperature(F)', ylab='Rate of Electricity (MW)')
+plot(elec$temp[time.l1-1], elec$MW[time.l1], 
+     main = 'Rate of Electricity vs Previous day Temperature',
+     xlab='Previous Day Temperature (F)', ylab='Next Day Rate of Electricity (MW)')
+
+hist(elec$temp, xlab = 'Temperature (F)', main = 'Histogram of Temperature (Degrees F)')
+boxplot(elec$temp, main='Boxplot of Temperatures (Degrees F)')
+```
+
+The first plot shows that there is a pattern associated with a day's *MW* value given a temperature. The peak electricity usage happens on the more extreme temperature days as a general rule. It can also be seen that the moderate temperatures have a somewhat consistent range of electricity usage that will be associated with them.
+
+Peak electric use soley happens on the temperature extremities. In the temperature range of 55-75 there is not a single outlier for peak electricity usage. I believe that if I leverage this fact and create a dummy variable for indication of temperature extremes, then I can much more accurately capture the spikes or dips in the *MW* values.
+
+The histogram reveals a distribution that is heavily skewed left for the temperature values. About 95% of the data is in the range of 60-85 degrees. The temperatures outside of this range are extremes for the region. The boxplot solidifies these findings.
+
+The final point of interest for me is to see if a lag=7 term has a better correlation than the lag=1 term I have been working with.
+
+```{r}
+time.l7 <- 8:nrow(elec)
+plot(elec$MW[time.l7-7], elec$MW[time.l7], xlab='Lag 7 Rate of Electricity (MW)',
+     ylab='Rate of Electricity (MW)', main='Rate of Electricity vs Lag 7 Rate of Electricity')
+
+
+```
+
+I will not investigate this further as the plot shows a much weaker correlation for the lag=7 term than my original lag=1 term.
+
+I will now have a main frame for training my autoregressive model called *model1*. After adding all of my features, I can select a model that I will then use to forecast the *MW* values for the last day of the year (day 365), and the first week of the following year if I elect to use this autoregressive model over my not yet built multiple regression model. However, this frame can be used for my later temperature autoregressive model that I require for forecasting *MW* values.
+
+```{r}
+# creating features
+# showing the time perioid one more time
+time.l1 <- 2:nrow(elec)
+
+# sinusoidal function for the yearly cycle of temperatures using
+#sin(2pi*t/k) and cos(2pi*t/k), with k=300 for my 300 day periodicity in temperature
+sin300 <- sin(2*pi*time.l1/300)
+cos300 <- cos(2*pi*time.l1/300)
+
+# lag 1 rates of electricity (MW)
+AR1 <- elec$MW[time.l1-1]
+
+# MW values
+MW <- elec$MW[time.l1]
+
+#current day temperatures
+cur.temp <- elec$temp[time.l1]
+
+#previous day temperature
+prev.temp <- elec$temp[time.l1-1]
+
+# dummy variable for more extreme temp values
+temp.extreme <- rep(FALSE, nrow(elec))
+temp.extreme[elec$temp >= 85] <- TRUE
+temp.extreme[elec$temp <= 55] <- TRUE
+temp.extreme <- as.factor(temp.extreme)
+temp.extreme <- temp.extreme[time.l1]
+# creating dummy variables for temeprature ranges of the current day
+temp.range <- rep('60<temp<80', nrow(elec))
+temp.range[elec$temp <= 60] <- 'temp<=60'
+temp.range[elec$temp >= 80] <- 'temp>=80'
+temp.range <- as.factor(temp.range)
+temp.range <- temp.range[time.l1]
+
+# creating dummy variables for weekends (which will be Saturday, Sunday)
+weekend <- rep(FALSE, nrow(elec))
+weekend[elec$DOW == 'Sun'] <- TRUE
+weekend[elec$DOW == 'Sat'] <- TRUE
+weekend <- as.factor(weekend)
+weekend <- weekend[time.l1]
+
+# new frame
+train <- data.frame(
+  MW=MW,
+  AR1 = AR1,
+  temp.range = temp.range,
+  cur.temp = cur.temp,
+  weekend = weekend,
+  sin300 = sin300,
+  cos300 = cos300,
+  temp.extreme = temp.extreme
+  )
+```
+
+For my first model, I want to check the performance of an autoregressive term, the sinusoidal variables, and the dummy variable for weekends. 
+
+```{r}
+model1 <- lm(MW~AR1 + cos300 + sin300 + weekend, data=train)
+summary(model1)
+```
+Resiudals:
+```{r}
+plot(time.l1, model1$residuals, xaxt='n', xlab='Day',
+     ylab = 'Residual', main='Model1 Residuals')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+
+acf(model1$residuals, lag.max=30)
+acf(model1$residuals, lag.max=365)
+
+hist(model1$residuals)
+```
+Already it appears that this model has improved on the baseline model. The explained variance in *MW* values has increased from about 50% to almost 65%. All regression coefficients are very significant with low p-values. The weekend dummy variable has a negative value as I expected from the exploratory analysis of the feature. The null hypothesis that the model is not mean reverting can once again be rejected, with normally distributed resiudal values having mean 0 and a constant variance.
+
+The residual plots reveal a bias for underprediciton. This must be addressed, since peak electric rates are an important component for this modeling.
+
+The fitted time series is below.
+
+```{r}
+plot(elec$MW, type='l', xaxt='n', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity Time Series with Model1 Overlay')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+#adding line of fitted values
+lines((time.l1), model1$fitted.values, col=2)
+
+
+par(mfrow=c(2,2))
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 25-52', xlim=c(25,52))
+lines((time.l1), model1$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 53-80', xlim=c(53,80))
+lines((time.l1), model1$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 115-170', xlim=c(115,170))
+lines((time.l1), model1$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 300-340', xlim=c(300,340))
+lines((time.l1), model1$fitted.values, col=2)
+```
+
+I will now fit a second model adding in temperature values which include the continous temperature values, the dummy variable for ranges of temperature values, and a dummy for indication if the temperature is an extreme range of values.
+
+```{r}
+model2 <- lm(MW~AR1 + cos300 + sin300 + weekend + cur.temp + temp.range + temp.extreme, data=train)
+summary(model2)
+
+```
+
+```{r}
+plot(time.l1, model2$residuals, xaxt='n', xlab='Day', ylab = 'Residual',
+     main='Model2 Residuals')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+
+acf(model2$residuals, lag.max=30)
+acf(model2$residuals, lag.max=365)
+
+hist(model2$residuals)
+```
+
+Despite losing significance in some of my coefficients, the new fit appears much improved. Naturally the explained variance in *MW* from the explanatory variables has increased due to a higher model complexity, and it has seen a jump to about 79%. The autoregressive coefficient has dropped to about 0.15, so while still mean reverting, it has changed from the base model by quite a bit.
+
+The temperature ranges away from the mean temperature are positive as expected, and the extreme temperature values have a large coefficient associated with them; this is also what was expected. The current temperature value having a negative temperature is concerning. The majority of the temperatures shown in the previous temperature vs *MW* plot show that besides the small proportion of temperature values below 60, I regression coefficient slightly above 0 is what I would expect. There is the large proportion of temperature values that are relativley constant and then with a positive slope for the higher temperature values. The negative *cur.temp* coefficient (although not signficant at the 95% level) indicates that the small temperature values that have high leverage and a steep negative slope are affecting this coefficient.
+
+The residual plots show massive improvement. There are no longer the residuals that are as heavily underfit as before, and the histogram has lost the right side tail that both of my previous models had.
+
+Let's see if these improvements are confirmed in the time series plot.
+
+```{r}
+plot(elec$MW, type='l', xaxt='n', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity Time Series with Model2 Overlay')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+#adding line of fitted values
+lines((time.l1), model2$fitted.values, col=2)
+
+
+par(mfrow=c(2,2))
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 25-52', xlim=c(25,52))
+lines((time.l1), model2$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 53-80', xlim=c(53,80))
+lines((time.l1), model2$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 115-170', xlim=c(115,170))
+lines((time.l1), model2$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 300-340', xlim=c(300,340))
+lines((time.l1), model2$fitted.values, col=2)
+```
+
+I think that the time series shows improvement. While far from acceptable, more of the peaks are being captured by my model as well as valleys in the time series for *MW*.
+
+For a final model before BIC stepwise selection, I want to use interactions. I postulate that the peak *MW* values that aren't captured as accurately in my model might be due to an interaction of the day of the week with extreme temperature values. For now, I am going to fit one more model with the appropriate interaction.
+
+I would like to see the difference in weekend vs weekday *MW* values against temperatures to test my postulation.
+
+```{r}
+cols <- rep('red', nrow(elec))
+cols[elec$DOW=='Sat'] <- 'green'
+cols[elec$DOW=='Sun'] <- 'green'
+plot(elec$temp, elec$MW, xlab='Temperature (F)', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity vs Temperature, Weekend vs Weekday', col=cols, pch=21)
+legend(40, 3500, legend=c("Weekday", "Weekend"), col=c("red", "green"), pch=21)
+
+
+```
+
+At the extreme temperature values, nearly all are the weekdays. I think an interaction may provide useful.
+
+Now to fitting a final autoregressive model before BIC stepwise selection.
+
+```{r}
+model3 <- lm(MW~AR1 + cos300 + sin300 + weekend+ cur.temp + temp.range + temp.extreme +
+               temp.extreme:weekend, data=train)
+summary(model3)
+```
+
+```{r}
+plot(time.l1, model3$residuals, xaxt='n', xlab='Day', ylab = 'Residual', main='Model3 Residuals')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+
+acf(model3$residuals, lag.max=30)
+acf(model3$residuals, lag.max=365)
+
+hist(model3$residuals)
+```
+
+This final model shows little to no improvement. The residual diagnostics appear almost identical, and although my interaction has my expected negative coefficient for an interaction of weekends and extreme temperatures (I concluded the extreme temperatures with high *MW* values had almost exclusively weekdays), it is insignificant and other terms are now insignficicant. Let's see if the actual fit has improved.
+
+```{r}
+plot(elec$MW, type='l', xaxt='n', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity Time Series with Model3 Overlay')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+#adding line of fitted values
+lines((time.l1), model3$fitted.values, col=2)
+
+
+par(mfrow=c(2,2))
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 25-52', xlim=c(25,52))
+lines((time.l1), model3$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 53-80', xlim=c(53,80))
+lines((time.l1), model3$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 115-170', xlim=c(115,170))
+lines((time.l1), model3$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 300-340', xlim=c(300,340))
+lines((time.l1), model3$fitted.values, col=2)
+
+```
+
+The fit appears to be about the same. I don't think an interaction will be valuable in my model.
+
+### BIC Stepwise Model Selection
+
+Now I will do BIC stepwise model selection. Before running the step function I will add one more dummy variable for just Sundays. Sundays appear to have even more local minima for their *MW* values associated with it. For this reason, I think that the extra dummy variable will be valuable.
+
+For the stepwise selection to be considered successful, it must at the minumum improve the explained variance ($R^2$) and have less than 3 terms that are not statistically significant. 
+
+```{r}
+sunday <- as.factor(elec$DOW=='Sun')
+sunday <- sunday[time.l1]
+train$sunday <- sunday
+null <- lm(MW~1, data=train)
+full <- lm(MW~ ., data=train)
+forward <- step(object = null, scope = formula(full), direction='forward',
+                k=log(nrow(train)), trace=F)
+summary(forward)
+```
+
+### Model Comparison
+ 
+Now let's use BIC to compare all of my models.
+
+```{r}
+BIC <- c(baseline=extractAIC(base.model, k=log(nrow(train)))[2],
+         mod1=extractAIC(model1, k=log(nrow(train)))[2],
+         mod2=extractAIC(model2, k=log(nrow(train)))[2],
+         mod3=extractAIC(model3, k=log(nrow(train)))[2],
+         bic.step=extractAIC(forward, k=log(nrow(train)))[2])
+eBIC <- exp(-0.5*(BIC-min(BIC)))
+probs <- eBIC/sum(eBIC)
+round(probs, 5)
+```
+
+With probability 0.99764, my forward stepwise selected model is the correct model. Let's check the model assumptions, then view the time series.
+
+```{r}
+plot(time.l1, forward$residuals, xaxt='n', xlab='Day', ylab = 'Residual',
+     main='Model3 Residuals')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+
+acf(forward$residuals, lag.max=30)
+acf(forward$residuals, lag.max=365)
+
+hist(forward$residuals)
+```
+
+
+````{r}
+plot(elec$MW, type='l', xaxt='n', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity Time Series with Model3 Overlay')
+axis(1, at=(0:7)*52, labels=((0:7)*52))
+#adding line of fitted values
+lines((time.l1), forward$fitted.values, col=2)
+
+
+par(mfrow=c(2,2))
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 25-52', xlim=c(25,52))
+lines((time.l1), forward$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 53-80', xlim=c(53,80))
+lines((time.l1), forward$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 115-170', xlim=c(115,170))
+lines((time.l1), forward$fitted.values, col=2)
+
+plot(elec$MW, type='l', xlab='Day', ylab = 'Rate of Electricity (MW)',
+     main='Days 300-340', xlim=c(300,340))
+lines((time.l1), forward$fitted.values, col=2)
+
+
+```
+
+If not for some residual outliers the autoregressive model assumptions for residuals would be met. With my final model, I am dissapointed. While my model has a decent fit on the time series of *MW* values, It clearly is lacking severely and I will not feel confident in my forecasting results. More time could be invested to improve this model through the creation of more features (at which point I risk overfitting). 
+
+This previous model had a lot invested into it in terms of time and exploration. I hope this next model, which I expect to be much simpler, is able to be a better fit for the data.
+
+### Analysis: Multiple Linear Regression Model for MW values
+
+Returning back to a simpler, less messy plot: *MW* vs *temp*.
+
+```{r}
+plot(elec$temp, elec$MW, xlab='Temperature (F)', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity vs Temperature', pch=21)
+```
+
+I should be able to have a strong model for this data if I divide the temperatures into 3 ranges for 3 different lines. A segmentation with the following temperature ranges should be suitable.
+
+```{r}
+# colors to be filled
+cols <- rep('green', nrow(elec))
+cols[elec$temp<60] <- 'blue'
+cols[elec$temp>74] <- 'red'
+
+plot(elec$temp, elec$MW, xlab='Temperature (F)', ylab = 'Rate of Electricity (MW)',
+     main='Rate of Electricity vs Temperature, Temperature Ranges', col=cols, pch=21)
+legend(40, 3500, legend=c("Temp<60", "60=<temp<=74", 'temp>74'),
+       col=c("blue", "green", 'red'), pch=21)
+```
+In order to achieve these 3 seperate fits, all that is needed is a dummy variable that acts as indicator of the temperature ranges. These will be labeled 'low', 'med', and 'high'.
+
+```{r}
+# these are the temperature values in the respective ranges
+low <- elec$temp[elec$temp < 60]
+med <- elec$temp[elec$temp >=60 & elec$temp <=74]
+high <- elec$temp[elec$temp>74]
+
+# and this dummy variable is the indicator for what range a temperature is in
+temper.range <- rep('med',nrow(elec))
+temper.range[elec$temp < 60] <- 'low'
+temper.range[elec$temp >74] <- 'high'
+temper.range <- as.factor(temper.range)
+low <- elec$temp[elec$temp < 60]
+med <- elec$temp[elec$temp >=60 & elec$temp <=74]
+high <- elec$temp[elec$temp>74]
+```
+
+Now, a multiple linear regression model can be fit to the data, using an interaction term to get the 3 seperate lines needed for our data.
+
+```{r}
+model.MLR <- lm(MW~ temp+ temper.range + temp:temper.range, data=elec)
+summary(model.MLR)
+plot(elec$temp, elec$MW)
+lines(elec$temp[elec$temp<60], model.MLR$fitted.values[elec$temp<60], col=2, lwd=3)
+lines(elec$temp[elec$temp>=60 & elec$temp<=74],model.MLR$fitted.values[elec$temp>=60&elec$temp<=74],
+      col=3, lwd=3)
+lines(elec$temp[elec$temp>74],model.MLR$fitted.values[elec$temp>74], col=4, lwd=3)
+```
+
+All three temperature ranges have a regression line fit to their temperatures. Here is a better visualization of the data.
+
+```{r}
+library(visreg);
+library(ggplot2);
+```
+```{r}
+visreg(model.MLR, "temp", gg=T, by='temper.range', overlay=T, rug=F,
+       type='conditional', points=list(pch=21, size=3))
+```
+With the 95% confidence interval bands displayed, the three seperate fits for different temperature ranges are visualized above. 
+
+The summary of the fit is suprisingly good. All of the terms have are very statistically significant at the 95% level, and we have an explained variance for the *MW* values of about 79.43%. This already surpasses the 79.29% from the best autoregressive model.
+
+Let's check the residuals for this model.
+
+```{r}
+hist(model.MLR$residuals)
+qqnorm(model.MLR$residuals)
+plot(model.MLR$fitted.values, model.MLR$residuals)
+```
+
+Besides an outlier, the residual assumptions for a linear regression are met. Residuals are normally distrubted with mean 0 and a constant variance.
+
+To improve this model, I will create a frame to remove this outlier, and try adding one of my previously successful dummy variables from the autoregressive model: weekends.
+
+```{r}
+# training frame for the MLR models
+# the outlier has a value of 2355 (computed in console)
+train.MLR <- data.frame(MW=elec$MW[elec$MW > 2360], temp = elec$temp[elec$MW>2360],
+                        temper.range=temper.range[elec$MW >2360])
+#adding weekend variable
+weekend <- rep(FALSE, nrow(elec))
+weekend[elec$DOW == 'Sun'] <- TRUE
+weekend[elec$DOW == 'Sat'] <- TRUE
+weekend <- as.factor(weekend[elec$MW>2360])
+train.MLR$weekend <- weekend
+```
+
+Now I can fit a new model with the weekend variable added in
+
+```{r}
+model.MLR2 <- lm(MW~temp+temper.range+weekend+temp:temper.range, data=train.MLR)
+summary(model.MLR2)
+```
+Residuals:
+```{r}
+hist(model.MLR2$residuals)
+qqnorm(model.MLR2$residuals)
+plot(model.MLR2$fitted.values, model.MLR2$residuals)
+```
+
+The summary output for this model shows an improved fit. The $R^2$ value indicating variance in *MW* explained by the explanatory variables has improved over 4 percentage points to 83.94%. Also, all of the regression coefficients retain their very high level of statistical significance. 
+The distribution of the residuals seems to be improved, and the residual assumptions of normality are met.
+
+```{r}
+visreg(model.MLR2, "temp", gg=T, by=c('temper.range'), overlay=T,
+       rug=F, type='conditional', points=list(pch=21, size=3))
+```
+
+I will not compare these 2 models I have just created, then compare the best of the two to the autoregressive model.
+
+```{r}
+BIC <- c(MLR1=extractAIC(model.MLR, k=log(nrow(elec)))[2],
+         MLR2=extractAIC(model.MLR2, k=log(nrow(train.MLR)))[2])
+eBIC <- exp(-0.5*(BIC-min(BIC)))
+probs <- eBIC/sum(eBIC)
+round(probs, 5)
+```
+
+The second MLR model has a probability of 1 of being the correct model between the two models. Let's compare this model to the autoregressive model.
+
+```{r}
+BIC <- c(forward=extractAIC(forward, k=log(nrow(train)))[2],
+         MLR2=extractAIC(model.MLR2, k=log(nrow(train.MLR)))[2])
+eBIC <- exp(-0.5*(BIC-min(BIC)))
+probs <- eBIC/sum(eBIC)
+round(probs, 5)
+```
+
+As I had anticipated, the multiple linear regression has a probality 1 of being the correct model when compared with the best autoregressive model I had selected. This result means that I will use this MLR model for prediction. But first comes one last model: an autoregressive model for temperature.
+
+#### Temperature Autoregressive Model
+
+My frame from my *MW* autoregressive model has many of the important variables needed for this model. Before I start, I want to check the acf plot of the temperature time series in order to make sure I know the periodicity of the data.
+
+```{r}
+plot(elec$temp, type='l', xlab='Day', ylab='Temperature (F)',
+     main='Temperature Time Series')
+acf(elec$temp, lag.max=365)
+```
+A a frequency of about 310 should be suitable for the time series. Now I will build a dataframe with variables for the *temp* autoregressive model.
+
+```{r}
+train.temp = data.frame(cur.temp = cur.temp, prev.temp = prev.temp,
+                        cos310 = cos(2*pi*time.l1/310), sin310 = sin(2*pi*time.l1/310))
+```
+
+I believe all of the added terms will be viable in the model, and for this reason I will start by fitting a model with all the terms.
+
+```{r}
+model.temp <- lm(cur.temp ~., data=train.temp)
+summary(model.temp)
+```
+
+All variables are significant, with the previous temperature variable (the autoregressive term of lag=1) having an absolute value less than 1. This means the autoregressive model is mean reverting, which is preferable for my forecasting. There is also an $R^2$ value of 0.8088 that is decent (or at least not horrible, I do not know what good $R^2$ values in the best temperature autoregressive models are). Looking at the residuals.
+
+```{r}
+acf(model.temp$residuals, lag.max=30)
+acf(model.temp$residuals, lag.max=365)
+plot(model.temp$residuals)
+hist(model.temp$residuals)
+```
+
+The residuals are close to normal, but there is not a constant variance, and the histogram being skewed to the left shows some overprediction of certain temperature values. I believe that this can partially be explained by acf plot of the residuals, as well as the time series of temperature itself. The acf plot for the entire year of residuals shows more tightly bound residual values that are smaller in absolute size than the rest of the year for an interval that is approximately days 100 to 230. On the time series, the amplitude of the waves for the time series are smaller for days 115 to 260. This interval is shown below with the fitted autoregressive model.
+```{r}
+plot(elec$temp, type='l', xlab='Day', ylab='Temperature (F)',
+     main='Temperature Time Series')
+
+abline(v=115, col=2)
+abline(v=260, col=2)
+
+#adding line of fitted values
+lines((time.l1), model.temp$fitted.values, col=2)
+
+par(mfrow=c(2,2))
+plot(elec$temp, type='l', xlab='Day', ylab = 'Temperature(F))',
+     main='Days 1-91', xlim=c(1,91))
+lines((time.l1), model.temp$fitted.values, col=2)
+
+plot(elec$temp, type='l', xlab='Day', ylab = 'Temperature(F))',
+     main='Days 91-182', xlim=c(91,182))
+lines((time.l1), model.temp$fitted.values, col=2)
+
+plot(elec$temp, type='l', xlab='Day', ylab = 'Temperature(F))',
+     main='Days 182-274', xlim=c(182,274))
+lines((time.l1), model.temp$fitted.values, col=2)
+
+plot(elec$temp, type='l', xlab='Day', ylab = 'Temperature(F))',
+     main='Days 274-364', xlim=c(274,364))
+lines((time.l1), model.temp$fitted.values, col=2)
+```
+
+I believe that this is a more stable, consistently hot period of time for the climate of the region. It starts about mid-way through the month of March, and continues until about mid-September. I think a binary dummy variable as an indicator for this time period would be appropriate, and could possibly aid prediction. I will call it stable.
+
+```{r}
+stable <- rep(FALSE, nrow(elec))
+stable[115:260] <- TRUE
+stable <- stable[time.l1]
+stable <- as.factor(stable)
+train.temp$stable <- stable
+```
+Since my model for temperature is already excellent looking at the plot of it overlayed with the time series, if I see satisfactory results with this new model I think it will be appropriate to go straight to forward stepwise selecion with interactions.
+
+```{r}
+model.temp2 <- lm(cur.temp~., data=train.temp)
+summary(model.temp2)
+```
+
+Before even proceeding, this dummy variable is clearly not significant. I am happy to use my first autoregressive model for temperature to predict future temperature values, as it had a good fit.
+
+### Forecasting
+Now I will begin forecasting. Before any forecasting scheme is conducted for the variable of interest, *MW*, I need to forecast values of *temp*.
+
+```{r}
+
+# time for prediction: last day of year through first week
+time.pred <- 365:372
+
+# temperaure prediction values and the 0.025 and 0.975 quantile values
+# of the prediciton interval
+temp.pred.frame <- data.frame( day=time.pred, val=rep(0,8),
+                               lwr025 = rep(0,8), upr975 = rep(0,8))
+
+# 8 predictions are needed, where each prediction requires
+# the previous temperature value
+# the first prediction can be added to my frame of values, and the rest will follow
+# in a for loop
+temp.pred <- predict(object = model.temp, newdata = data.frame(prev.temp=elec$temp[364],
+                                                               cos310=cos(2*pi*365/300),
+                                                               sin310=sin(2*pi*365/300)),
+                     interval='prediction')
+temp.pred.frame[1,c(2,3,4)] <- temp.pred
+
+#in each step, create a prediction using the previously
+#predicted temperature value, and add it to my frame of predictions
+for(i in 2:8){
+  temp.pred.frame[i,c(2,3,4)] <- predict(object = model.temp,
+                                         newdata = data.frame(
+                                           prev.temp=temp.pred.frame[i-1,2],
+                                          cos310=cos(2*pi*time.pred[i]/300),
+                                          sin310=sin(2*pi*time.pred[i]/300)),
+                                         interval='prediction')  
+}
+```
+
+The predictions, with their upper and lower bounds for a 95% prediction interval, are displayed below.Each row represents a day, starting at 365.
+```{r}
+temp.pred.frame
+```
+
+And the extension of the original time series for these predictions. 
+
+```{r}
+plot(elec$temp, type='l', xlab='Day', ylab='Temperature (F)', 
+     main='Temperature Time Series with Predictions', xlim=c(350,375))
+lines(temp.pred.frame$day, temp.pred.frame$val, col=2, lwd=2)
+lines(temp.pred.frame$day, temp.pred.frame$lwr025, col=2, lty=2, lwd=2)
+lines(temp.pred.frame$day, temp.pred.frame$upr975, col=2, lty=2, lwd=2)
+
+```
+
+Now that temperature values have been obtained, I can construct the appropriate explanatory variables for forecasting the *MW* values. In order to measure the uncertainty in the forecasted values, I will do 3 sets of forecasts. These sets of forecasts will use the predicted temperatures, the upper bounds of each prediction, and the lower bounds. For each set of predictions, there will also be 95% prediction intervals giving overall uncertainty. This strategy will be more apparent once the predictions are visualized.
+
+I will start by building three data frames for each sets of forecasts. The temperature ranges are uniform for each forecast set. The mean prediction values and lower bounds are in the 'med' temperature range, where my upper values are in the 'high' temperature range.
+
+```{r}
+# time interval for predictions
+time.pred <- 365:372
+# weekend values for my forecasted days, which starts on a sunday
+weeknd <- c(TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE)
+# using predicted temperature and other explanatory variables
+pred.MW.mid.frame <- data.frame(temp = temp.pred.frame$val, 
+                                temper.range=as.factor(rep('med',8)),
+                                weekend = as.factor(weeknd)) 
+# using upperbound temperature and other explanatory variables
+pred.MW.upper.frame <- data.frame(temp = temp.pred.frame$upr975,
+                                  temper.range=as.factor(rep('high',8)),
+                                  weekend = as.factor(weeknd))
+# using lower bound temperature and other explanatory variables
+pred.MW.lower.frame <- data.frame(temp = temp.pred.frame$lwr025,
+                                  temper.range=as.factor(rep('med',8)),
+                                  weekend = as.factor(weeknd))
+
+# these data frames are for my results
+results.forecast.mid <- data.frame(day=time.pred, val=rep(0,8),
+                                   lwr025 = rep(0,8), upr975=rep(0,8))
+results.forecast.lwr <- data.frame(day=time.pred, val=rep(0,8),
+                                   lwr025 = rep(0,8), upr975=rep(0,8))
+results.forecast.upr <- data.frame(day=time.pred, val=rep(0,8),
+                                   lwr025 = rep(0,8), upr975=rep(0,8))
+
+# now, using the predict function, I can get my results
+mid.predictions <- predict(object=model.MLR2, newdata=pred.MW.mid.frame
+                           , interval='prediction')
+upr.predictions <- predict(object=model.MLR2, newdata=pred.MW.upper.frame,
+                           interval='prediction')
+lwr.predictions <- predict(object=model.MLR2, newdata=pred.MW.lower.frame,
+                           interval='prediction')
+
+#putting results in my frames
+results.forecast.mid[,2:4] <- mid.predictions[,1:3]
+results.forecast.lwr[,2:4] <- lwr.predictions[,1:3]
+results.forecast.upr[,2:4] <- upr.predictions[,1:3]
+
+# an example of what these dataframes look like
+results.forecast.upr
+```
+
+Displayed above is the set of *MW* forecasts for the upperbound of the prediction interval of temperature. The the sets for the fitted temperature predictions, then the lower bound of the temperature prediction intervals and the associated *MW* forecasts are displayed below.
+
+```{r}
+results.forecast.mid
+results.forecast.lwr
+```
+
+Let's visualize the results, starting with 3 plots of a continued time series of *MW* values for each of the sets of forecasts.
+
+```{r}
+# upper temps
+plot(elec$MW, type='l', xlab='Day', ylab='Rate of Electricity (MW)',
+     main='Rate of Electricity with Forecasts (Temperature Upper Bound)',
+     xlim=c(360,375), ylim=c(2450, 3800))
+lines(temp.pred.frame$day, results.forecast.upr$val, col=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.upr$lwr025, col=2, lty=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.upr$upr975, col=2, lty=2, lwd=2)
+
+#fit temps
+plot(elec$MW, type='l', xlab='Day', ylab='Rate of Electricity (MW)',
+     main='Rate of Electricity with Forecasts (Predicted Temperatures)',
+     xlim=c(360,375), ylim=c(2450, 3800))
+lines(temp.pred.frame$day, results.forecast.mid$val, col=3, lwd=2)
+lines(temp.pred.frame$day, results.forecast.mid$lwr025, col=3, lty=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.mid$upr975, col=3, lty=2, lwd=2)
+
+#lower temps
+plot(elec$MW, type='l', xlab='Day', ylab='Rate of Electricity (MW)',
+     main='Rate of Electricity with Forecasts (Lower Bound)',
+     xlim=c(360,375), ylim=c(2450, 3800))
+lines(temp.pred.frame$day, results.forecast.lwr$val, col=4, lwd=2)
+lines(temp.pred.frame$day, results.forecast.lwr$lwr025, col=4, lty=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.lwr$upr975, col=4, lty=2, lwd=2)
+
+```
+
+An overlay of the fitted *MW* values from each of the three forecast sets.
+
+```{r}
+plot(elec$MW, type='l', xlab='Day', ylab='Rate of Electricity (MW)',
+     main='Rate of Electricity with Forecasts', xlim=c(360,375), ylim=c(2450, 3800))
+lines(temp.pred.frame$day, results.forecast.upr$val, col=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.mid$val, col=3, lwd=2)
+lines(temp.pred.frame$day, results.forecast.lwr$val, col=4, lwd=2)
+legend(360, 3700, legend = c('High Temps', 'Medium Temps', 'Low Temps'),
+       col = c('red', 'green', 'blue'), lty = 1)
+```
+
+It will be valuable to provide the highest prediction boundary of the high temp forecasts (which I can visually determine is larger values than the other 2 forecast sets), and the lowest of the fitted temp for low temp forecasts. Let's figure out which of these boundaries is lower, and plot it.
+
+```{r}
+results.forecast.mid$lwr025 - results.forecast.lwr$lwr025
+# the output shows the lower bounds for mid temperatures are lower than the low temperatures.
+# they will serve as the lower bounds for the overall forecasts.
+
+plot(elec$MW, type='l', xlab='Day', ylab='Rate of Electricity (MW)',
+     main='Rate of Electricity with Forecasts', xlim=c(360,375), ylim=c(2450, 3800))
+lines(temp.pred.frame$day, results.forecast.upr$val, col=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.mid$val, col=3, lwd=2)
+lines(temp.pred.frame$day, results.forecast.lwr$val, col=4, lwd=2)
+lines(temp.pred.frame$day, results.forecast.mid$lwr025, col=6, lty=2)
+lines(temp.pred.frame$day, results.forecast.upr$upr975, col=6, lty=2)
+legend(360, 3700, legend = c('High Temps', 'Medium Temps', 'Low Temps'),
+       col = c('red', 'green', 'blue'), lty = 1)
+
+```
+
+All that remains is to decide on my final *MW* values that will serve as my forecasted set, as I have 3 sets of forecasts. I think that using the forecast set from the fitted temperature predictions will be best. They are the expected temperatures from my model. To calculate uncertainty, I will use the bound displayed above. Here is a final visualization and table of my findings.
+
+```{r}
+results.final <- data.frame(Day = 365:372,
+                            Forecasted_Electric_Rate = results.forecast.mid$val,
+                            Prediction_Interval_Upper_Bound = results.forecast.upr$upr975,
+                            Prediction_Interval_Lower_Bound = results.forecast.mid$lwr025)
+
+plot(elec$MW, type='l', xlab='Day', ylab='Rate of Electricity (MW)',
+     main='Rate of Electricity with Forecasts', xlim=c(360,375), ylim=c(2450, 3800))
+lines(temp.pred.frame$day, results.forecast.upr$val, col=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.mid$lwr025, col=2, lty=2, lwd=2)
+lines(temp.pred.frame$day, results.forecast.upr$upr975, col=2, lty=2, lwd=2)
+
+results.final
+```
+
+## Conclusion
+
+After analysis I have determined that there are indeed predictors that allow a model of electricity demand. The temperature of a day has a strong determination of electricity demand. Specifically, this temperature, and the range of temperature that it is apart of, together affect electicity demand. Three different regression lines can be fit for three temperature ranges. Low temperatures are those less than 60 degrees Fahrenheit, medium between 60 and 74 degrees, and high greater than 74 degrees. In the low temperature range, as temperature decreases, electricity demand increases. For the medium temperature range, there is a slight decrease in electricity demand as temperature increases but the electricity is mostly consistent. For the high temperature range, as temperature increases, the electricity demand increases. Additionally, there is less electricity demand on weekends, demonstrated by the negative regression coefficient for this feature that I created.
+
+I believe that the electricity demand can be accurately forecasted. I was able to produce a well fitting temperature time series model, and used those values to forecast a very tight fitting multiple regression model for electricity demand. I was able to get 3 seperate forecasts for electricity demand dependent on the mean or bounds of the forecasted electricity for each day, and even when taking the maximum range of electricity demand in the forecast, the range of electricity demand was roughly 1000 MW at most for the day. Given the limited number of variables available, I consider this an accurate forecast.
+
+
+# Titanic Dataset
+
+
+## Summary
+
+In 1912 the now infamous sinking of the titanic occured. More than 2/3 of the passengers onboard ultimately perished from the event. Using data provided by Kaggle at www.kaggle.com/c/titanic/data, analysis can be done to help understand which passengers were more likely to survive the incident than others. The dataset from Kaggle has information relating to most of the passengers onboard the ship with fields like Name, Ticket Price (Fare), port of embarkment, Sex, number of parents or children onboard with the passenger, among other fields. Is this information enough to accurately classify the passengers as having survived the incident or not? And if so, which of these fields are stronger predictors than others?
+
+In my analysis, I was able to get above-average performance on a classifier. I elected to use a logistic regression model, which uses a regression model for binary classification. This regression model outputs the probability of 'success' (in this dataset survival) based on the variables (passenger information) that the model is constructed with. In order to get the level of performance that my model achieved, I had to engineer some features from the provided passenger information. These features were mainly taking count data like number of parents or children onboard, and number of siblings and spouses onboard, and engineering features for a subset of these counts. For example, instead of using the field number of parents or children onboard as a continous variable (or even a categorical variable), my EDA found that creating a dummy variable to indicate whether a passenger had at least 1 parent or child onboard would be more valuable.
+
+After a few iterations of building a logistic regression model with different fields, I decided on a simple model with more than 10 variables, but no interactions amongst the variables. This model was trained on 85% of the provided non-testing data, and validated on the remaining 15%. The model had a Bayesion Information Criterion (BIC) score of 729.8, a Brier Score (mean squared difference of predicted probability of survival and true outcome (1 or 0)) of 0.1278, an accuracy (proportion of correct predictions to total predictions) of 82.84%, an F1-score (harmonic mean of True Positive Rate and proportion of true positives to predicted positives) of 0.7629, and a specificity (True Negative Rate) of 87.06%. When tested on the test dataset of passengers, 154 of them were classified as survivors. The training and validation set had a total of 342 survivors, and the total number of passengers that survived is about 500. This means that an expectation of about 158 survivors is the number of survivors in the test dataset. My classifier missed this mark by only 4. After testing, the classifications for passengers by group were observed. **The biggest finding, and the most glaring highlight in this whole analysis, is that of the 100 passengers in my test dataset who were men with the title Mr. that purchased 3rd class tickets, without spouses, siblings, parents or children on board, every single one was classified as not surviving.**
+
+## Data Analysis
+
+### EDA Phase
+
+Let's start by loading the datasets for this problem, and viewing a summary of the features as well as the head of the dataset.
+
+```{r}
+data_titanic <- read.csv('titanic_imputted.csv')
+titanic_test <- read.csv('titanic_imputed_test.csv')
+summary(data_titanic)
+head(data_titanic)
+```
+
+Since the model I have in mind for this problem is a binary classification model, I already see certain features that will not be of use. For example, the ticket variable will likely not be useful. It is not a continous variable, and converting it to a dummy variable will make way too many levels.
+
+The names will also not be of value, as the titles in the names are already a feature. The titles themselves may not be that valuable since there is a feature for sex already present. Lastly, the cabin feature may not be that valuable since there are missing values. Let's explore some of these potentially problematic features.
+
+```{r}
+# number of levels for categorical Ticket Variable
+length(levels(as.factor(data_titanic$Ticket)))
+
+# number of levels for cabin variable
+length(levels(as.factor(data_titanic$Cabin)))
+
+# levels for title
+levels(as.factor(data_titanic$Title))
+
+```
+
+The Ticket and Cabin variables will not be useful with so many variables. However, for now, the Title variable might be of use and there few enough variables that they wouldn't results in overfitting problems for later validation and testing.
+
+Now, I'm going to plot some of the features that will likely be useful. With the dependent variable survived being a binary indicator, I would like to see a plot of survived versus some of the continous variables provided in the dataset. Fare and Age are the 2 continous variables provided.
+
+```{r}
+# plot of Survived vs Fare
+plot(data_titanic$Fare, data_titanic$Survived, main='Survived vs Fare')
+
+# plot of Survived vs Age
+plot(data_titanic$Age, data_titanic$Survived, main ='Survived vs Age')
+```
+
+For the plot Survived vs Fare, It appears that as ticket price increased, there was at least some degree of increased probability of survival for the more expensive ticket prices. Additionally, there is one outlier for Fare that would be problematic for training a model. The Survived vs Age plot does not appear to be very useful, but there does seem to be a bit of grouping for survival for the very young passengers (babies and infants with age less than 2).
+
+I think adding a second covariate to these plots will give a bit more insight. Let's color the plots with their sex categorization.
+
+```{r}
+# colors where blue is for male, red female
+sex_color <- ifelse(data_titanic$Sex == 'male','blue', 'red')
+
+# survived vs fare
+plot(data_titanic$Fare, data_titanic$Survived, col=sex_color,
+     main = 'Survived vs Fare (Male and Female)', xlab='Ticket Price', ylab='Surived')
+legend(0, 0.6, legend = c('Male', 'Female'), col = c('blue', 'red'), pch=1)
+# survived vs age
+plot(data_titanic$Age, data_titanic$Survived, col= sex_color,
+     main='Survived vs Age (Male and Female)', xlab='Age', ylab = 'Survived')
+legend(0, 0.6, legend = c('Male', 'Female'), col = c('blue', 'red'), pch=1)
+```
+
+These plots are extremely revealing. The passenger's sex is extremley impactful on their probability of survival.
+
+I am going to repeat this process, except looking at the class of the passengers' tickets provided by the Pclass variable. In this plot, I will take the log of the Fare variable to see if it 'brings in' some of the variables that might be outliers.
+
+```{r}
+pclass_color <- ifelse(data_titanic$Pclass==1, 'red', 'blue')
+pclass_color[data_titanic$Pclass==3] <- 'green'
+
+# survived vs fare
+plot(log(data_titanic$Fare), data_titanic$Survived, col=pclass_color,
+     main = 'Survived vs log(Fare) (Ticket Class)', xlab='log(Ticket Price)',
+     ylab='Surived')
+
+legend(1.35, 0.6, legend = c('1st Class', '2nd Class', '3rd Class'),
+       col = c('red', 'blue', 'green'), pch=1)
+
+# survived vs age
+plot(data_titanic$Age, data_titanic$Survived, col= pclass_color,
+     main='Survived vs Age (Ticket Class)', xlab='Age',
+     ylab='Surived')
+
+legend(0, 0.6, legend = c('1st Class', '2nd Class', '3rd Class'),
+       col = c('red', 'blue', 'green'), pch=1)
+
+```
+
+These plots are also insightful. The log transform appears to make a cleaner distribution of the Fare variable, and shows better seperation between the passenger classes. Accross almost all ages, the 3rd class passengers are much less likely to survive, while the 1st class customers are more likely to survive. The categorical Pclass variable will likely be impactful in my model.
+
+I also want to see the impact of embarked on survival. Let's visualize once again.
+
+```{r}
+emb_color <- ifelse(data_titanic$Embarked=='S', 'red', 'blue')
+emb_color[data_titanic$Embarked=='Q'] <- 'green'
+
+# survived vs fare
+plot(log(data_titanic$Fare), data_titanic$Survived, col= emb_color,
+     main = 'Survived vs log(Fare) (Port of Embarkation)',
+     xlab = 'log(Ticket Price)', ylab='Surived')
+
+legend(1.35, 0.6, legend = c('S', 'C', 'Q'), col = c('red', 'blue', 'green'), pch=1)
+
+# survived vs age
+plot(data_titanic$Age, data_titanic$Survived, col= emb_color,
+     main='Survived vs Age (Port of Embarkation)', xlab = 'Age', ylab='Surived')
+legend(0, 0.6, legend = c('S', 'C', 'Q'), col = c('red', 'blue', 'green'), pch=1)
+
+
+```
+
+Embarkment port doesn't seem to have a significant impact on probability of surviving, however, passengers that embarked from Q (Queenstown) seemed to mostly not survive.
+
+The last categorical variable of interest to me is the title variable. Since I know that passengers of the female sex survived, I want to see the difference between the different female titles but also include the other title.
+
+```{r}
+title_color <- ifelse(data_titanic$Title=='Mrs', 'red', 'blue')
+title_color[data_titanic$Title=='Other'] <- 'green'
+
+title_color <- 
+  title_color[data_titanic$Title=='Mrs' | data_titanic$Title=='Miss' |
+                             data_titanic$Title=='Other']
+
+# survived vs fare
+plot(log(data_titanic$Fare[data_titanic$Title == 'Miss' |
+                             data_titanic$Title == 'Mrs' |
+                             data_titanic$Title == 'Other']),
+     data_titanic$Survived[data_titanic$Title == 'Miss' |
+                             data_titanic$Title == 'Mrs' |
+                             data_titanic$Title == 'Other'],
+     col= title_color,
+     main = 'Survived vs log(Fare) (Titles Miss, Mrs, Other)',
+     xlab='log(Ticket Price)', ylab='Surived')
+
+legend(1.85, 0.6, legend = c('Mrs', 'Miss', 'Other'),
+       col = c('red', 'blue', 'green'), pch=1)
+
+# survived vs age
+plot(data_titanic$Age[data_titanic$Title == 'Miss' |
+                        data_titanic$Title == 'Mrs' |
+                        data_titanic$Title == 'Other'],
+     data_titanic$Survived[data_titanic$Title == 'Miss' |
+                             data_titanic$Title == 'Mrs' |
+                             data_titanic$Title == 'Other'],
+     col= title_color,
+     main='Survived vs Age (Titles Miss, Mrs, Other)',
+     xlab='Age', ylab='Survived')
+
+legend(0, 0.6, legend = c('Mrs', 'Miss', 'Other'), col = c('red', 'blue', 'green'), pch=1)
+
+
+
+```
+The plot above tells me that overall, passengers with the title Mrs had a much higher probability of survival accross all ages and ticket prices. There is not any other significant groupings to be seen in the plot, however, above the ticket price of about $e^4 \approx 55.5$, almost all of the passengers with this title survived.
+
+These findings have made me curious to see if the titles Mr and Master (which are all male, as seen below), have any impact on probability of survival. The same visualization process will be repeated one last time.
+
+```{r}
+data_titanic$Sex[data_titanic$Title=='Master']
+
+```
+```{r}
+title_color_MR_Master <- ifelse(data_titanic$Title=='Mr', 'red', 'blue')
+title_color_MR_Master <- title_color_MR_Master[data_titanic$Title == 'Mr' |
+                                                 data_titanic$Title == 'Master']
+
+# survived vs fare
+plot(log(data_titanic$Fare[data_titanic$Title == 'Mr' | data_titanic$Title == 'Master']),
+     data_titanic$Survived[data_titanic$Title == 'Mr' | data_titanic$Title == 'Master'],
+     col= title_color_MR_Master, main = 'Survived vs log(Fare) (Titles Mr and Master)',
+     xlab='log(Ticket Price)', ylab='Surived')
+legend(1.40, 0.6, legend = c('Mr', 'Master'), col = c('red', 'blue'), pch=1)
+
+# survived vs age
+plot(data_titanic$Age[data_titanic$Title == 'Mr' | data_titanic$Title == 'Master' ],
+     data_titanic$Survived[data_titanic$Title == 'Mr' | data_titanic$Title == 'Master'],
+     col= title_color_MR_Master, main='Survived vs Age (Titles Mr and Master)',
+     xlab='Age', ylab='Survived')
+legend(0, 0.6, legend = c('Mr', 'Master'), col = c('red', 'blue'), pch=1)
+
+```
+
+It appears that the fates of the Misters and the Masters are equally doomed to death, and I see no significance in the above plot. However, there be collinearity with Title and Age, as it appears the title Master is reserved for boys and not men.
+
+
+Now that I better understand this data, I will take a look at the outliers.
+
+
+```{r}
+boxplot(data_titanic$Fare)
+hist(data_titanic$Fare)
+hist(log(data_titanic$Fare))
+```
+
+There are many outliers for Fare, with one in particular being even more extreme than the rest. Since there are many outliers and the histogram shows that there is not a normal distribution, I can't simply replace these outliers with the mean of the Fare variable. If I were to use this variable, I would more likely use to log transform (histogram shown) to reduce the impact of outliers.
+
+Now looking at Age.
+
+```{r}
+boxplot(data_titanic$Age)
+hist(data_titanic$Age)
+
+```
+
+There are a few outliers for Age. The distirbution is near normal so it would be viable to replace the ages of the outliers with the mean instead of removing them. However, some of these Age values have been imputed, and further altering the values might create even more innacuracies from the true age distribution of the passengers. I will leave the Age variable untouched.
+
+### Model Seletion
+
+Now, I will select the model I want to use. This dataset and the main task of creating a prediction rule for which passengers survive is a binary classification problem. I for this binary classification model, I will use a logistic (logit) model, which uses a binary response variable in a regression problem. This generalized linear model uses the logit link, which transforms our predictors and their regression coefficients to output a probability that the response variable (in this case survived) is equal to 0.
+
+With this model selected, I can begin to build a training dataset. First I will need to remove variables that I know will be of no use, and convert appropriate variables to factors.
+
+```{r}
+# keeping only the necessary columns
+keeps <- c('Survived', 'Pclass', 'Sex', 'Age',
+           'SibSp', 'Parch', 'Fare', 'Embarked', 'Title')
+# making a cleaned dataset before I have a seperate frame for training
+titanic_cleaned <- data_titanic[keeps]
+names(titanic_cleaned)
+
+titanic_cleaned$Survived <- as.factor(titanic_cleaned$Survived)
+titanic_cleaned$Sex <- as.factor(titanic_cleaned$Sex)
+titanic_cleaned$Pclass <- as.factor(titanic_cleaned$Pclass)
+titanic_cleaned$Embarked <- as.factor(titanic_cleaned$Embarked)
+```
+
+Despite being continous variables, Parch (parents and children onboard) and SibSp (siblings and spouses on board) do not have a high range of values and I think that leaving them as continous variables would not be appropriate. First let's see these ranges and what percent of passengers have the assigned values. Starting with SibSp.
+
+```{r}
+# range of values
+range(titanic_cleaned$SibSp)
+# proportion that have at least 1 sibling or spouse onboard
+sum(titanic_cleaned$SibSp[titanic_cleaned$SibSp > 0]) / length(titanic_cleaned$SibSp)
+# proportion that have at least 5 siblings or spouse onboard
+sum(titanic_cleaned$SibSp[titanic_cleaned$SibSp > 4]) / length(titanic_cleaned$SibSp)
+```
+
+About half of the passengers have more than 1 sibling onboard. Perhaps a new feature that is a binary indicator for if the person has no siblings or spouses onboard would be more appropriate. Less than 10% of the passenger have 5 or more siblings onboard, but I think using this as an indicator as well would be useful since they represent large groups of people that are related onboard. Let's code these up before proceeding.
+
+```{r}
+titanic_cleaned$NoSibSp <- ifelse(titanic_cleaned$SibSp == 0, 1, 0)
+titanic_cleaned$NoSibSp <- as.factor(titanic_cleaned$NoSibSp)
+
+titanic_cleaned$FiveOrMoreSibSp <- ifelse(titanic_cleaned$SibSp > 4, 1, 0)
+titanic_cleaned$FiveOrMoreSibSp <- as.factor(titanic_cleaned$FiveOrMoreSibSp)
+```
+
+Now looking at the Parch (parents and children onboard).
+
+```{r}
+range(titanic_cleaned$Parch)
+
+#proportion of passengers with at least 1 parent or child
+sum(titanic_cleaned$Parch[titanic_cleaned$Parch > 0]) / nrow(titanic_cleaned)
+
+# proportion of passengers with 4 or more passengers or children
+sum(titanic_cleaned$Parch[titanic_cleaned$Parch > 3]) / nrow(titanic_cleaned)
+```
+
+With only about 38% of the passengers having at least 1 parent or children on board, I think a single dummy variable to indicate the presence or absence of of parents and siblings onboard will be suitable. Let's code this as well, by changing the given column into a column binary indicator variable.
+
+```{r}
+titanic_cleaned$Parch <- ifelse(titanic_cleaned$Parch > 0, 1, 0)
+titanic_cleaned$Parch <- as.factor(titanic_cleaned$Parch)
+```
+
+Now I must decide how to handle the Title variable. I am not sure what exactly to do with this variable. One possible idea is to soley have indicators for Miss and Mrs, however, this will likely result in collinearity with the Sex variable. Another idea is to have an indicator just for those with the title Mrs, since they had the highest probability of survival. For now, I am going to leave this variable untouched.
+
+```{r}
+titanic_cleaned$Title <- as.factor(titanic_cleaned$Title)
+```
+
+Lastly, the log transform for the Fare variable (ticket price). The justifications for this transform were demonstrated earlier, where its distribution became more normal and it significantly decreased the variance in in Fare values, bringing the outliers closer to the rest of the ticket prices. However, I have discovered that the variable has a range of 0-512.3292. This means that a square root transform will need to be check for instead.
+
+```{r}
+hist(sqrt(titanic_cleaned$Fare))
+```
+
+This distribution is not quite normal. However, I think that the variable is to important to drop, and I will remove it later if it is causing issues in model performance.
+
+
+```{r}
+titanic_cleaned$sqrtFare <- sqrt(titanic_cleaned$Fare)
+# dropping Fare variable
+titanic_cleaned<- titanic_cleaned[, -which(names(titanic_cleaned) %in% c("Fare"))]
+names(titanic_cleaned)
+```
+
+Before building and applying a training and validation split to the dataset, I will be using Variable Inflation Factor (VIF, https://www.statisticshowto.com/variance-inflation-factor/) to check for multi-collinearity amongst the variables. VIF values of 1 indicate no collinearity, less than 5 indicate some degree of collinearity, and 5 or greater is a signficant amount of collinearity.
+
+```{r}
+# using a GLM on the whole dataset to look for multicollinearity
+# before proceeding to training model on train split of dataset
+titanic_cleaned$OneToFourSibSp
+library(car)
+vif(glm(Survived~.-SibSp, data=titanic_cleaned, family='binomial'))
+```
+
+As I suspected, the titles are collinear with Sex and the Sex variable has an astranomically high VIF value. Let's see if removing it solves the value for Title that is currently greater than 5 (and we want to decrease).
+
+```{r}
+vif(glm(Survived~.-SibSp-Sex, data=titanic_cleaned, family='binomial'))
+```
+
+Removing Sex from the VIF calculation has solved all isues of collinearity, and in fact, the highest VIF score is only 1.502 which is excellent. I will remove Sex from my calculation, split my cleaned dataset into train and validte sections, then start training a model.
+
+```{r}
+# removing Sex variable
+titanic_cleaned <- titanic_cleaned[, -which(names(titanic_cleaned) %in% c("Sex"))]
+```
+
+I have decided to use a 85/15 ratio for train / validate for my model. The current data I have been working with is 68% of the total data (where the testing dataset is 32%). Even at an 85/25 split, I am training on about 58% of the data which is suboptimal in my opinion.
+
+```{r}
+set.seed(12345)
+tr <- sample(1:nrow(titanic_cleaned), 0.85 * nrow(titanic_cleaned))
+titanic_train <- titanic_cleaned[tr,]
+titanic_val <- titanic_cleaned[-tr,]
+```
+
+Now I can build my logit model, starting with all of the variables in my training dataset. Just to note, this data is my already cleaned data with certain features engineered for the training. Also, I have kept the original siblings and parents variable (SibSp) in case my dummy variables for the data does not yield favorable results; it will be left out of the model to begin with.
+
+
+```{r}
+model.titanic1 <- glm(Survived~.-SibSp, data=titanic_train, family='binomial')
+summary(model.titanic1)
+```
+
+Checking residuals
+
+```{r}
+library(statmod)
+hist(qresiduals(model.titanic1))
+plot(qresiduals(model.titanic1))
+```
+
+There are not many significant terms in the summary of the model. However, the residuals are normal and I think some adjustments could perhaps improve the model. First lets test the model on the validation data. I have found an analog of RMSE for binary classification problems that is called the Brier score (https://en.wikipedia.org/wiki/Brier_score), which I found from the post here: https://stats.stackexchange.com/a/172985. I will be using it to get a better assessment of out of sample performance for my models than simply an accuracy would. As the stackexchange post discuses, simply using accuracy is not the best assessment. This is because I might not have an ideal threshold for probabilities to be classified as survived or not survived (and this issue that I was pondering is what led me to look for a better assessment criteria). My Brier score is obtained with the equation $BS = \frac{1}{N} \sum_{t=1}^N (P_t - o_t)^2$, where $N$ is the length of my validation set, $P_t$ is my predicted probabilities for passenger survival, and $o_t$ is the actual outcome for the passenger. It is the mean squared differnce between predicted probability of survival and the true outcome, a suitable analog. A smaller Brier score, among other criteria, will help me determine which model is best. I will still use accuracy to assess performance, as well as the F1 score (harmonic mean of recall=True Positive Rate and precision=proportion of positive values predicted correctly), and specificty= True Negative Rate
+
+I am going to build a dataframe to keep track of these scores.
+
+```{r}
+performance <- data.frame(modelName = 'model.titanic1, no interacitons',
+                          BICscore = extractAIC(model.titanic1,
+                                                k=log(nrow(titanic_train)))[2])
+
+```
+
+```{r}
+model.titanic.pred1 <- predict(model.titanic1,
+                               newdata=titanic_val[,2:length(titanic_train)],
+                               type='response')
+# Brier score for the model
+# getting outcome values for brier score (need to make the survived factor a numeric,
+# and subtract 1 since an addition of 1 occurs in the conversion)
+outcomes_val <- as.numeric(titanic_val[,1]) - 1
+# computing Brier score and adding to my dataframe
+performance$BrierScore <- 
+  (1/nrow(titanic_val)) * sum((model.titanic.pred1 - outcomes_val)^2)
+```
+
+### computing accuracy, recall and f1 score
+```{r}
+library(caret)
+#re-leveling Survived for the confusion matrix function
+titanic_val$Survived <- relevel(titanic_val$Survived, '1')
+# providing predictions converted to outcomes using threshold of 0.5
+CM1 <- confusionMatrix(data = relevel(as.factor(ifelse(model.titanic.pred1 >0.5, 1, 0)),
+                                      '1'),
+                       reference= titanic_val$Survived, mode='everything')
+# confusion matrix
+CM1$table
+
+
+# storing values
+performance$accuracy <- CM1$overall[[1]]
+performance$F1 <- CM1$byClass[[7]]
+performance$specificity = CM1$byClass[[2]]
+
+# viewing metrics relating to confusion matrix
+CM1
+
+# performance on first model
+performance
+
+```
+
+Now I will create a new model using the step function and repeat this process. For this BIC step selected model to be 'approved', it should have a higher BIC probability than my previous model. Also, it will need to improve accuracy and F1 as a main criteria.  
+
+```{r}
+null <- glm(Survived ~1, data=titanic_train, family='binomial')
+full <- glm(Survived~.-SibSp, data=titanic_train, family='binomial')
+model.titanic2.step <- step(object = null, scope=formula(full),
+                            direction='forward', k = log(nrow(titanic_train)), trace=F)
+summary(model.titanic2.step)
+```
+
+Residuals:
+
+```{r}
+hist(qresiduals(model.titanic2.step))
+plot(qresiduals(model.titanic2.step))
+```
+
+The model, seems to be improved, as there are more significant terms in the summary output. Also, the intercept, which includes the first levels of the created dummy variables for features with more than 1 category (like ticket class), is not significant. The residuals once again satisfy the regression assumptions with a normal distribution centered on 0 and a constant variance.
+
+Now, we will collect all of the necessary metrics for out of sample predictive performance.
+
+```{r}
+# adding new row to the performance dataframe
+performance[2,] <- NA
+performance$modelName[2] <- 'model.titanic2.step, no interactions'
+performance$BICscore[2] <-  extractAIC(model.titanic2.step, k=log(nrow(titanic_train)))[2]
+
+# prediction
+model.titanic.pred2 <- predict(model.titanic2.step,
+                               newdata=titanic_val[,2:length(titanic_train)],
+                               type='response')
+
+# computing Brier score and adding to my dataframe
+performance$BrierScore[2] <-
+  (1/nrow(titanic_val)) * sum((model.titanic.pred2 - outcomes_val)^2)
+
+# providing predictions converted to outcomes using threshold of 0.5
+CM2 <- confusionMatrix(data = relevel(as.factor(ifelse(model.titanic.pred2 >0.5, 1, 0)),
+                                      '1'),
+                       reference= titanic_val$Survived, mode='everything')
+
+# confusion matrix
+CM2$table
+
+
+# storing values
+performance$accuracy[2] <- CM2$overall[[1]]
+performance$F1[2] <- CM2$byClass[[7]]
+performance$specificity[2] <- CM2$byClass[[2]]
+
+# viewing metrics relating to confusion matrix
+CM2
+
+# performance on models
+performance
+```
+
+The difference in out of sample performance on my validation set is interesting. While BIC score has decreased (like due largely to decreased model complexity), the Brier Score has slightly increased (which is worse performance), my accuracy, F1, and specificity have decreased quite a bit. Overall, I would say that my BIC step selected model is worse, which I find very interesting. These results encourage me to try one more model before looking at interaction models. I will create a new model that adjusts my first model.
+
+```{r}
+summary(model.titanic1)
+```
+
+I believe removing the Embark variable and the feature I created for having 5 or more siblings or spouses onboard should be removed. The Embark variables appear to be near useless (and my earlier visualizations indicated this). The feature for 5 or more siblings or spouses also has a very high p-value, and appears to be unecessary. I will leave in the rest of the variables from the model.
+
+```{r}
+model.titanic3 <- glm(Survived~. -SibSp - FiveOrMoreSibSp - Embarked, data=titanic_train,
+                      family='binomial')
+summary(model.titanic3)
+```
+
+Checking residuals
+
+```{r}
+hist(qresiduals(model.titanic3))
+plot(qresiduals(model.titanic3))
+```
+
+My residual assumptions are satisfied. This model has improved on the first models number of significant terms. Let's see if the out of sample performance has improved as well.
+
+```{r}
+# adding new row to the performance dataframe
+performance[3,] <- NA
+performance$modelName[3] <- 'model.titanic3, no interactions'
+performance$BICscore[3] <-  extractAIC(model.titanic3, k=log(nrow(titanic_train)))[2]
+
+# prediction
+model.titanic.pred3 <- predict(model.titanic3,
+                               newdata=titanic_val[,2:length(titanic_train)],
+                               type='response')
+
+# computing Brier score and adding to my dataframe
+performance$BrierScore[3] <-
+  (1/nrow(titanic_val)) * sum((model.titanic.pred3 - outcomes_val)^2)
+
+# providing predictions converted to outcomes using threshold of 0.5
+CM3 <- confusionMatrix(data = relevel(as.factor(ifelse(model.titanic.pred3 >0.5, 1, 0)),
+                                      '1'),
+                       reference= titanic_val$Survived, mode='everything')
+
+# confusion matrix
+CM3$table
+
+
+# storing values
+performance$accuracy[3] <- CM3$overall[[1]]
+performance$F1[3] <- CM3$byClass[[7]]
+performance$specificity[3] <- CM3$byClass[[2]]
+
+# viewing metrics relating to confusion matrix
+CM3
+
+# performance on models
+performance
+```
+
+This model, model 3, seems to have found a position between the two previous models. It's BIC score improves on the first model while the Brier Score is slightly worse than the first. It's accuracy, F1, and specificity are between the two previous models, with specificity (True Negative Rate) being very close to the first.
+
+#### Interactions
+
+Now I will build a final model with interaction effects. I postulate that interactions of PClass and Title will have a strong effect on probability of survival, but this remains to be seen. I am going to remove columns that I am now confident I won't be using. I will not be using the SibSp variable (siblings and spouses onboard) and the 5OrMoreSibSp variable (passenger has 5 or more siblings and spouses onboard). Then I will use the step function to build this model that includes interactions.
+
+```{r}
+titanic_train <- titanic_train[,
+                               -which(names(titanic_train) %in% c("SibSp", "FiveOrMoreSibSp"))]
+titanic_val <- titanic_val[,
+                           -which(names(titanic_val) %in% c("SibSp", "FiveOrMoreSibSp"))]
+
+```
+
+```{r}
+# scope for interactions
+null.int <- glm(Survived~1, data=titanic_train, family='binomial')
+full.int <- glm(Survived~.^2, data=titanic_train, family='binomial')
+model.titanic4.step <- step(null.int, scope = formula(full.int), direction='forward',
+                            k = log(nrow(titanic_train)), trace=F)
+summary(model.titanic4.step)
+```
+
+This step selected model that includes interactions is the exact same as the step selected model that doesn't include interactions. This doesn't seem right to me. I am going to make a change to my training set. I will drop the Title variable and replace it with the Sex variable. I think that this could potentially solve some issues, as the titles are gendered besides the title Other (which does not have many values). I believe using Sex, which only has 2 categories, could yield interactions.
+
+```{r}
+# removing Title variable
+titanic_train <- titanic_train[, -which(names(titanic_train) %in% c("Title"))]
+titanic_val <- titanic_val[, -which(names(titanic_val) %in% c("Title"))]
+
+# adding back the Sex variable 
+titanic_train$Sex <- as.factor(data_titanic$Sex[tr])
+titanic_val$Sex <- as.factor(data_titanic$Sex[-tr])
+```
+
+```{r}
+# double checking VIF scores
+vif(glm(Survived~., data=titanic_train, family='binomial'))
+```
+
+With this new variable added, I will try to get a new logistic regression model for the training data.
+
+```{r}
+null.int <- glm(Survived~1, data=titanic_train, family='binomial')
+full.int <- glm(Survived~.^2, data=titanic_train, family='binomial')
+model.titanic4.step <- step(null.int, scope = formula(full.int), direction='forward',
+                            k = log(nrow(titanic_train)), trace=F)
+summary(model.titanic4.step)
+```
+
+Checking residuals
+
+```{r}
+hist(qresiduals(model.titanic4.step))
+plot(qresiduals(model.titanic4.step))
+```
+
+
+Reisudal assumptions are met. The step selected model has included 2 interactions, 1 of which is significant. 3rd class male passengers have a p-value of 0.004. Let's see how this model performs compared to the rest.
+
+```{r}
+
+# adding new row to the performance dataframe
+performance[4,] <- NA
+performance$modelName[4] <- 'model.titanic4.step, interactions, replace Title with Sex'
+performance$BICscore[4] <-  extractAIC(model.titanic4.step, k=log(nrow(titanic_train)))[2]
+
+# prediction
+model.titanic.pred4 <- predict(model.titanic4.step,
+                               newdata=titanic_val[,2:length(titanic_val)],
+                               type='response')
+
+# computing Brier score and adding to my dataframe
+performance$BrierScore[4] <- 
+  (1/nrow(titanic_val)) * sum((model.titanic.pred4 - outcomes_val)^2)
+
+# providing predictions converted to outcomes using threshold of 0.5
+CM4 <- confusionMatrix(data = relevel(as.factor(ifelse(model.titanic.pred4 >0.5, 1, 0)),
+                                      '1'),
+                       reference= titanic_val$Survived, mode='everything')
+
+# confusion matrix
+CM4$table
+
+
+# storing values
+performance$accuracy[4] <- CM4$overall[[1]]
+performance$F1[4] <- CM4$byClass[[7]]
+performance$specificity[4] <- CM4$byClass[[2]]
+
+# viewing metrics relating to confusion matrix
+CM4
+
+# performance on models
+performance
+```
+
+To my surprise, the interaction model does not perform better than all previous models. While it has a lower BIC score, other performance metrics show it is not aas good as previous models. It's Brier score is the worst of all the models, and it has the same accuracy as model2 (the other step model) so they share last place in that metric. It has the worse F1 score. However, it does have the best specificity value, which means it classifies passengers that do not survive better than any other model (specificity is the True Negative Rate).
+
+#### Which model is my best model?
+
+Since models with lower BIC scores are clearly not the best performing, I think that they will not be useful for evaluation. I believe that model1 or model3 are the two best models, based on Having the 2 highest accuracies and F1 scores, as well as the two lowest Brier Scores. They are rank 2 and 3 for specificity, but are not far behind model 4 in that metric. Is the slight increase in complexity present in model 1 worth the increased performance over model 3? I would argue that the increased complexity is not worth the increased performance. The performance is for a small proportion of the total dataset, and I think that the chance of overfitting with more complexity present in model 1 might result in worst performance on the test set. Model 3 (titanic.model3) is my selected model, and here is its summary before proceeding to testing.
+
+```{r}
+summary(model.titanic3)
+```
+
+My most relevant predictors from my model are Passenger class, Age, having at least one parent or child onboard, the titles of Mr, Other, and Master, and having no siblings or spouses onboard.
+
+### Testing on Test Dataset
+
+I will make a copy of the test dataset to construct the appropriate columns for prediction on the dataset.
+```{r}
+# copy of test dataset
+titanic_test_pred <- titanic_test
+rownames(titanic_test_pred) <- titanic_test_pred$PassengerId
+titanic_test_pred <- 
+  titanic_test_pred[,
+                    -which(names(titanic_test_pred) %in% c("Name",
+                                                           "PassengerId",
+                                                           "Sex",
+                                                           "Ticket",
+                                                           "Cabin",
+                                                           "AgeEst"))]
+head(titanic_test_pred)
+titanic_test_pred$Pclass <- as.factor(titanic_test_pred$Pclass)
+titanic_test_pred$Parch <- as.factor(ifelse(titanic_test_pred$Parch > 0 , 1, 0))
+
+titanic_test_pred$NoSibSp <- ifelse(titanic_test_pred$SibSp == 0, 1, 0)
+titanic_test_pred$NoSibSp <- as.factor(titanic_test_pred$NoSibSp)
+
+titanic_test_pred$FiveOrMoreSibSp <- ifelse(titanic_test_pred$SibSp>4,1,0)
+titanic_test_pred$FiveOrMoreSibSp <- as.factor(titanic_test_pred$FiveOrMoreSibSp)
+
+titanic_test_pred$Title <- as.factor(titanic_test_pred$Title)
+titanic_test_pred$sqrtFare <- sqrt(titanic_test_pred$Fare)
+titanic_test_pred <- titanic_test_pred[, -which(names(titanic_test_pred)
+                                                                     %in% c("Fare"))]
+
+titanic_test_pred$Embarked <- as.factor(titanic_test_pred$Embarked)
+names(titanic_test_pred)
+```
+
+Now prediciton for the test data can be done.
+
+```{r}
+# predictions
+final_predictions <- predict(model.titanic3, newdata=titanic_test_pred, type='response')
+
+# outcomes using threshold of 500
+
+sum(as.numeric(data_titanic$Survived))
+```
+
+Below is the outcomes from the predicted probabilties. Given that the train and test datasets have 342 survivors, and there were about 500 surviving passenger on the ship, I am hoping to see a value near 158 to show good performance from my model.
+
+```{r}
+# number of survivors in training and test dataset
+sum(data_titanic$Survived)
+
+# expected survivors in this dataset
+500-342
+
+
+outcomes_test <- ifelse(final_predictions>0.5, 1, 0)
+sum(outcomes_test)
+
+print('Number of Survivors in Train/Validate Dataset:  342')
+print('Expected Number of Survivors in Test Dataset: 158')
+print('Number of Predicted Survivors in Test Dataset: 154')
+```
+
+Wow! My model was able to classify 154 passengers as survivors, compared to a groundtruth total of about 158.. While there could false negatives and false positives, I do not have the groundtruth survival statistic for each individual passenger and cannot check.
+
+Let's add these outcomes for the passengers to the prediction dataframe, and see the number of survivors, grouped by the strong predictors.
+
+```{r}
+titanic_test_pred$Survived <- outcomes_test
+```
+
+
+```{r}
+titanic_test_pred$Age_Range <- ifelse(titanic_test_pred$Age <= 18,
+                                      '18 or less', 'Over 18')
+titanic_test_pred$ParentOrChildOnboard <- ifelse(titanic_test_pred$Parch == 1,
+                                                 'yes', 'no')
+titanic_test_pred$SiblingsOrSpouseOnboard <- ifelse(titanic_test_pred$NoSibSp == 1,
+                                                    'no', 'yes')
+# creating a dataframe that groups by the list of variables in the 'by' argument,
+# and shows the number of passengers that survived in each group.
+group_survivals <-
+  aggregate(titanic_test_pred$Survived,
+            by=list(Age_Range = titanic_test_pred$Age_Range,
+                    Class=titanic_test_pred$Pclass,
+                    Title= titanic_test_pred$Title,
+                    ParentOrChildOnboard =titanic_test_pred$ParentOrChildOnboard,
+                    SiblingsOrSpouse = titanic_test_pred$SiblingsOrSpouseOnboard),
+                             FUN=sum)
+
+# now taking the number of deaths for each group. I am taking the sum of the absolute
+# value of the Survived column minus 1, which will make all survivors be assigned 0,
+# and those that didnt negative. 
+group_deaths <-
+  aggregate(abs(titanic_test_pred$Survived-1),
+            by=list(Age_Range = titanic_test_pred$Age_Range,
+                    Class=titanic_test_pred$Pclass,
+                    Title= titanic_test_pred$Title,
+                    ParentOrChildOnboard = titanic_test_pred$ParentOrChildOnboard,
+                    SiblingsOrSpouse = titanic_test_pred$SiblingsOrSpouseOnboard),
+                          FUN=sum)
+
+group_survivals$Deaths <- group_deaths$x
+
+names(group_survivals) <- c(names(group_survivals)[1:(length(group_survivals)-2)],
+                            'Survivors', 'Deaths')
+
+summary(model.titanic3)
+names(titanic_test_pred)
+group_survivals
+```
+
+
+## Conclusions
+
+With my analysis concluded, I can finally answer my questions of interest. At the start of this analysis I asked, is the provided information in this titanic passenger dataset enough to accurately classify survivors? And if so, which of these fields provided are stronger predictors than the others? Using my model (a logistic regression model), I have confidence that I can correctly answer these questions. First, the provided information is without a doubt enough to accurately classify passengers. I trained my model on only about 58% of the total passenger data, and validated it on about 10% of the total data, with the remaining approximatley 32% being used for testing. Despite a suboptimal proportion of data that was used for training, there were overall strong confusion matrix performance metrics for my final model on the validation set. I was able to leverage some feature engineering in order to expand the possible information that could be used for each passenger.
+
+Second, there were some information fields of the passengers that were more significant than others for the task of classifying the passengers as survivors. Sex, which was moreso represented by the field Title (Mr, Mrs, Miss, Master, or Other) was statistically significant. Passenger ticket class (1st, 2nd or 3rd) was also statistically significant. 3rd and 2nd class passengers had a much less likely probability of survival as their negative regression coefficients indicate. Passengers with parents or children onboard had a decreased chance of survival, and this field was also a strong indicator of survival. Finally, having no siblings or spouses onboard increased probability of survival, but this impact on survival was not as strong as the aforementioned fields.
+
+
+
+
+
